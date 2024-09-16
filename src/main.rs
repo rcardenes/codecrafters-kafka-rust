@@ -1,22 +1,45 @@
-#![allow(unused_imports)]
-use std::net::TcpListener;
+use anyhow::Result;
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
+use kafka_starter_rust::kafka_protocol::Request;
+use kafka_starter_rust::process::build_response;
+
+#[tokio::main]
+async fn main() -> Result<()> {
     println!("Logs from your program will appear here!");
 
-    // Uncomment this block to pass the first stage
-    //
-     let listener = TcpListener::bind("127.0.0.1:9092").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:9092").await.unwrap();
 
-     for stream in listener.incoming() {
-         match stream {
-             Ok(_stream) => {
-                 println!("accepted new connection");
-             }
-             Err(e) => {
-                 println!("error: {}", e);
-             }
-         }
-     }
+    loop {
+        match listener.accept().await {
+            Ok((socket, addr)) => {
+                println!("accepted new connection from: {}", addr);
+                
+                tokio::spawn(async move {
+                    // Handle the connection here
+                    match handle_connection(socket).await {
+                        Ok(_) => println!("connection closed"),
+                        Err(e) => println!("error: {}", e),
+                    }
+                });
+            }
+            Err(e) => {
+                println!("error: {}", e);
+            }
+        }
+    }
+}
+
+async fn handle_connection(mut socket: tokio::net::TcpStream) -> Result<()> {
+    let mut buffer = [0; 1024];
+
+    loop {
+        let read_bytes = socket.read(&mut buffer).await?;
+        let request = Request::try_from_message(buffer[..read_bytes].to_vec())?;
+        eprintln!("Request: {request:?}");
+        let response = build_response(request)?;
+        eprintln!("Response: {response:?}");
+        socket.write_all(&response.to_message()).await?;
+    }
 }
