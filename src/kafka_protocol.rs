@@ -31,16 +31,18 @@ pub enum ApiKey {
     ApiVersions = 18,
 }
 
+#[repr(i16)]
 pub enum ErrorCode {
     // More error codes will be included as needed
     UnknownServerError = -1,
     None = 0,
+    UnsupportedVersion = 35,
 }
 
-impl TryFrom<u16> for ApiKey {
+impl TryFrom<i16> for ApiKey {
     type Error = io::Error;
 
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
         match value {
             18 => Ok(ApiKey::ApiVersions),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported API key")),
@@ -51,8 +53,8 @@ impl TryFrom<u16> for ApiKey {
 #[derive(Debug)]
 pub struct Request {
     pub api_key: ApiKey,
-    pub api_version: u16,
-    pub correlation_id: u32,
+    pub api_version: i16,
+    pub correlation_id: i32,
     pub client_id: Option<String>,
     pub client_version: Option<String>,
     pub body: Vec<u8>,
@@ -65,9 +67,9 @@ impl Request {
 
     pub fn try_from(value: Vec<u8>) -> Result<Self, io::Error> {
         let mut buf = &value[..];
-        let api_key = ApiKey::try_from(buf.get_u16())?;
-        let api_version = buf.get_u16();
-        let correlation_id = buf.get_u32();
+        let api_key = ApiKey::try_from(buf.get_i16())?;
+        let api_version = buf.get_i16();
+        let correlation_id = buf.get_i32();
         let client_id = if api_version > 0 {
             read_nullable_string(&mut buf)?
         } else {
@@ -103,12 +105,12 @@ impl Request {
 
 #[derive(Debug)]
 pub struct Response {
-    pub correlation_id: u32,
+    pub correlation_id: i32,
     pub body: Vec<u8>,
 }
 
 impl Response {
-    pub fn new(correlation_id: u32, body: Vec<u8>) -> Self {
+    pub fn new(correlation_id: i32, body: Vec<u8>) -> Self {
         Response {
             correlation_id,
             body,
@@ -122,7 +124,7 @@ impl Response {
     pub fn to_message(self) -> Vec<u8> {
         let mut buf = Vec::with_capacity((self.size() + 4) as usize);
         buf.put_u32(self.size());
-        buf.put_u32(self.correlation_id);
+        buf.put_i32(self.correlation_id);
         buf.extend(self.body);
         buf
     }
