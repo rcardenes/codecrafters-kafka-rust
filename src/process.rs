@@ -1,6 +1,7 @@
+use tokio::io;
 use anyhow::{bail, Result};
-use bytes::BufMut;
-use crate::kafka_protocol::{ApiKey, ErrorCode, Request, Response};
+use bytes::{Buf, BufMut};
+use crate::kafka_protocol::{read_compact_string, read_uvarint, ApiKey, ErrorCode, Request, Response};
 
 fn write_uvarint(buf: &mut Vec<u8>, value: u64) {
     let mut value = value;
@@ -51,7 +52,7 @@ const API_VERSIONS: &[ApiVersion] = &[
 fn process_api_versions(req: Request) -> Result<Response> {
     let mut body: Vec<u8> = vec![];
 
-    if req.api_version < 0 ||req.api_version > 4 {
+    if req.api_version != 4 {
         body.put_i16(ErrorCode::UnsupportedVersion as i16);
     } else {
         body.put_i16(ErrorCode::None as i16);
@@ -69,10 +70,97 @@ fn process_api_versions(req: Request) -> Result<Response> {
     Ok(Response::new(req.correlation_id, body))
 }
 
+#[derive(Debug)]
+struct Partition {
+    partition: u32,
+    current_leader_epoch: u32,
+    fetch_offset: u64,
+    last_fetched_epoch: u32,
+    log_start_offset: u64,
+    partition_max_bytes: u32,
+}
+
+impl Partition {
+    fn try_from(data: &mut &[u8]) -> Result<Self> {
+        let partition = data.get_u32();
+        let current_leader_epoch = data.get_u32();
+        let fetch_offset = data.get_u64();
+        let last_fetched_epoch = data.get_u32();
+        let log_start_offset = data.get_u64();
+        let partition_max_bytes = data.get_u32();
+        assert_eq!(read_uvarint(data)?, 0); // We don't expect a tag buffer
+
+        Ok(Partition {
+            partition,
+            current_leader_epoch,
+            fetch_offset,
+            last_fetched_epoch,
+            log_start_offset,
+            partition_max_bytes,
+        })
+    }
+}
+
+struct Topics {
+    topic_id: uuid::Uuid,
+    partitions: Vec<Partition>,
+}
+
+impl Topics {
+    fn try_from(value: &mut &[u8]) -> Result<Self> {
+        let topic_id = uuid::Builder::from_bytes(value.copy_to_bytes(16)
+            .as_ref()
+            .try_into()?).into_uuid();
+        let n_partitions = read_uvarint(value)?;
+        let mut partitions = vec![];
+        for _ in 0..n_partitions {
+            partitions.push(Partition::try_from(value)?);
+        }
+        assert_eq!(read_uvarint(value)?, 0); // We don't expect a tag buffer
+
+        Ok(Topics {
+            topic_id,
+            partitions,
+        })
+    }
+}
+
+fn process_fetch(req: Request) -> Result<Response> {
+    let mut req_body = req.body.as_slice();
+
+    let max_wait_ms = req_body.get_i32();
+    let min_bytes = req_body.get_i32();
+    let max_bytes = req_body.get_i32();
+    let isolation_level = req_body.get_u8();
+    let session_id = req_body.get_i32();
+    let session_epoch = req_body.get_i32();
+    let topics = Topics::try_from(&mut req_body)?;
+    let forgotten_topics = Topics::try_from(&mut req_body)?;
+    let rack_id = read_compact_string(&mut req_body)?;
+
+    let mut resp_body: Vec<u8> = vec![];
+
+    if req.api_version != 16 {
+        resp_body.put_i16(ErrorCode::UnsupportedVersion as i16);
+    } else {
+        resp_body.put_i16(ErrorCode::None as i16);
+        resp_body.put_i32(0); // throttle_time_ms
+        resp_body.put_i32(session_id);
+        //let topic_bytes = topics.topic_id.into_bytes();
+        //resp_body.put_slice(&topic_bytes);
+        //resp_body.put_u8(0); // No topics
+        resp_body.put_u8(0); // No responses
+        resp_body.put_u8(0); // Empty tag buffer
+    }
+
+    Ok(Response::new(req.correlation_id, resp_body))
+}
+
 pub fn build_response(req: Request) -> Result<Response> {
     #[allow(unreachable_patterns)]
     match &req.api_key {
         ApiKey::ApiVersions => Ok(process_api_versions(req)?),
+        ApiKey::Fetch => Ok(process_fetch(req)?),
         other => bail!("API Key {other:?} not yet implemented")
     }
 }

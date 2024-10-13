@@ -1,7 +1,7 @@
 use tokio::io;
 use bytes::{Buf, BufMut};
 
-fn read_uvarint(buf: &mut &[u8]) -> Result<u64, io::Error> {
+pub fn read_uvarint(buf: &mut &[u8]) -> Result<u64, io::Error> {
     let mut result = 0;
     let mut shift = 0;
     while buf.remaining() > 0 {
@@ -23,6 +23,14 @@ fn read_nullable_string(buf: &mut &[u8]) -> Result<Option<String>, io::Error> {
     let str_bytes = &buf[..len];
     buf.advance(len);
     Ok(Some(String::from_utf8_lossy(str_bytes).to_string()))
+}
+
+pub fn read_compact_string(buf: &mut &[u8]) -> Result<String, io::Error> {
+    let length = read_uvarint(buf)?.saturating_sub(1);
+
+    let bt = buf.copy_to_bytes(length as usize);
+
+    Ok(String::from_utf8_lossy(&bt).to_string())
 }
 
 fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {

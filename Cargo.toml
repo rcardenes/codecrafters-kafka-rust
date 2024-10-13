@@ -23,3 +23,7 @@ anyhow = "1.0.59"                                   # error handling
 bytes = "1.7"                                       # helps manage buffers
 thiserror = "1.0.32"                                # error handling
 tokio = { version = "1.23.0", features = ["full"] } # async networking
+
+[dependencies.uuid]
+version = "1.10.0"
+features = [ "v4" ]
