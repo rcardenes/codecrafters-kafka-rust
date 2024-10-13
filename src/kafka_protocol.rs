@@ -1,4 +1,5 @@
 use tokio::io;
+use anyhow;
 use bytes::{Buf, BufMut};
 
 pub fn read_uvarint(buf: &mut &[u8]) -> Result<u64, io::Error> {
@@ -33,6 +34,28 @@ pub fn read_compact_string(buf: &mut &[u8]) -> Result<String, io::Error> {
     Ok(String::from_utf8_lossy(&bt).to_string())
 }
 
+pub trait Retrievable {
+    fn try_from(value: &mut &[u8]) -> anyhow::Result<Self> where Self: Sized;
+}
+
+pub fn read_compact_array<T>(buf: &mut &[u8]) -> anyhow::Result<Option<Vec<T>>>
+where T: Retrievable
+{
+    let mut ret = vec![];
+    let mut count = read_uvarint(buf)?;
+
+    if count == 0 {
+        Ok(None)
+    } else {
+        while count > 1 {
+            ret.push(T::try_from(buf)?);
+            count -= 1;
+        }
+
+        Ok(Some(ret))
+    }
+}
+
 fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
     let mut n_fields = read_uvarint(buf)?;
     let mut ret = vec![];
@@ -65,6 +88,7 @@ impl TryFrom<i16> for ApiKey {
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
         match value {
+            1 => Ok(ApiKey::Fetch),
             18 => Ok(ApiKey::ApiVersions),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported API key")),
         }
@@ -131,28 +155,41 @@ impl Request {
 
 }   
 
+#[derive(Debug, PartialEq)]
+pub enum ResponseVer {
+    V0,
+    V1,
+}
+
 #[derive(Debug)]
 pub struct Response {
+    pub response_ver: ResponseVer,
     pub correlation_id: i32,
     pub body: Vec<u8>,
 }
 
 impl Response {
-    pub fn new(correlation_id: i32, body: Vec<u8>) -> Self {
+    pub fn new(response_ver: ResponseVer, correlation_id: i32, body: Vec<u8>) -> Self {
         Response {
+            response_ver,
             correlation_id,
             body,
         }
     }
 
     pub fn size(&self) -> u32 {
-        4 + self.body.len() as u32
+        // 5 == correlation_id + empty tag buffer
+        self.body.len() as u32 + (if self.response_ver == ResponseVer::V1 { 5 } else { 4 })
     }
 
     pub fn to_message(self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity((self.size() + 4) as usize);
+        let mut buf = Vec::with_capacity((self.size()) as usize);
+
         buf.put_u32(self.size());
         buf.put_i32(self.correlation_id);
+        if (self.response_ver == ResponseVer::V1) {
+            buf.put_u8(0); // Empty tag buffer
+        }
         buf.extend(self.body);
         buf
     }

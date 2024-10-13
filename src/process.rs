@@ -1,7 +1,6 @@
-use tokio::io;
 use anyhow::{bail, Result};
 use bytes::{Buf, BufMut};
-use crate::kafka_protocol::{read_compact_string, read_uvarint, ApiKey, ErrorCode, Request, Response};
+use crate::kafka_protocol::{read_compact_array, read_compact_string, read_uvarint, ApiKey, ErrorCode, Request, Response, Retrievable};
 
 fn write_uvarint(buf: &mut Vec<u8>, value: u64) {
     let mut value = value;
@@ -67,7 +66,7 @@ fn process_api_versions(req: Request) -> Result<Response> {
         body.put_u8(0); // Empty tag buffer
     }
 
-    Ok(Response::new(req.correlation_id, body))
+    Ok(Response::new(crate::kafka_protocol::ResponseVer::V0, req.correlation_id, body))
 }
 
 #[derive(Debug)]
@@ -101,12 +100,12 @@ impl Partition {
     }
 }
 
-struct Topics {
+struct Topic {
     topic_id: uuid::Uuid,
     partitions: Vec<Partition>,
 }
 
-impl Topics {
+impl Retrievable for Topic {
     fn try_from(value: &mut &[u8]) -> Result<Self> {
         let topic_id = uuid::Builder::from_bytes(value.copy_to_bytes(16)
             .as_ref()
@@ -118,7 +117,7 @@ impl Topics {
         }
         assert_eq!(read_uvarint(value)?, 0); // We don't expect a tag buffer
 
-        Ok(Topics {
+        Ok(Topic {
             topic_id,
             partitions,
         })
@@ -128,23 +127,24 @@ impl Topics {
 fn process_fetch(req: Request) -> Result<Response> {
     let mut req_body = req.body.as_slice();
 
-    let max_wait_ms = req_body.get_i32();
-    let min_bytes = req_body.get_i32();
-    let max_bytes = req_body.get_i32();
-    let isolation_level = req_body.get_u8();
+    let _max_wait_ms = req_body.get_i32();
+    let _min_bytes = req_body.get_i32();
+    let _max_bytes = req_body.get_i32();
+    let _isolation_level = req_body.get_u8();
     let session_id = req_body.get_i32();
-    let session_epoch = req_body.get_i32();
-    let topics = Topics::try_from(&mut req_body)?;
-    let forgotten_topics = Topics::try_from(&mut req_body)?;
-    let rack_id = read_compact_string(&mut req_body)?;
+    let _session_epoch = req_body.get_i32();
+    let _topics = read_compact_array::<Topic>(&mut req_body)?;
+    let _forgotten_topics = read_compact_array::<Topic>(&mut req_body)?;
+    let _rack_id = read_compact_string(&mut req_body)?;
+    assert_eq!(read_uvarint(&mut req_body)?, 0); // We don't expect a tag buffer
 
     let mut resp_body: Vec<u8> = vec![];
 
     if req.api_version != 16 {
         resp_body.put_i16(ErrorCode::UnsupportedVersion as i16);
     } else {
-        resp_body.put_i16(ErrorCode::None as i16);
         resp_body.put_i32(0); // throttle_time_ms
+        resp_body.put_i16(ErrorCode::None as i16);
         resp_body.put_i32(session_id);
         //let topic_bytes = topics.topic_id.into_bytes();
         //resp_body.put_slice(&topic_bytes);
@@ -153,7 +153,7 @@ fn process_fetch(req: Request) -> Result<Response> {
         resp_body.put_u8(0); // Empty tag buffer
     }
 
-    Ok(Response::new(req.correlation_id, resp_body))
+    Ok(Response::new(crate::kafka_protocol::ResponseVer::V1, req.correlation_id, resp_body))
 }
 
 pub fn build_response(req: Request) -> Result<Response> {
