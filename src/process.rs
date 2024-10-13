@@ -2,6 +2,19 @@ use anyhow::{bail, Result};
 use bytes::BufMut;
 use crate::kafka_protocol::{ApiKey, ErrorCode, Request, Response};
 
+fn write_uvarint(buf: &mut Vec<u8>, value: u64) {
+    let mut value = value;
+    while value > 0 {
+        let mut encoded = (value & 0x7f) as u8;
+        value = value >> 7;
+
+        if value > 0 {
+            encoded |= 0x80;
+        }
+        buf.push(encoded);
+    }
+}
+
 struct ApiVersion {
     api_key: ApiKey,
     min_version: i16,
@@ -37,18 +50,22 @@ fn process_api_versions(req: Request) -> Result<Response> {
         body.put_i16(ErrorCode::UnsupportedVersion as i16);
     } else {
         body.put_i16(ErrorCode::None as i16);
-        body.put_u32(API_VERSIONS.len() as u32);
+        write_uvarint(&mut body, (API_VERSIONS.len() + 1) as u64);
         for api_version in API_VERSIONS {
+            body.put_i16(api_version.api_key as i16);
             body.put_i16(api_version.min_version);
             body.put_i16(api_version.max_version);
-            body.put_i16(api_version.api_key as i16);
+            body.put_u8(0); // Empty tag buffer
         }
+        body.put_u32(0); // throttle_time
+        body.put_u8(0); // Empty tag buffer
     }
 
     Ok(Response::new(req.correlation_id, body))
 }
 
 pub fn build_response(req: Request) -> Result<Response> {
+    #[allow(unreachable_patterns)]
     match &req.api_key {
         ApiKey::ApiVersions => Ok(process_api_versions(req)?),
         other => bail!("API Key {other:?} not yet implemented")

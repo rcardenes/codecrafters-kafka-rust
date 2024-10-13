@@ -1,7 +1,7 @@
 use tokio::io;
 use bytes::{Buf, BufMut};
 
-fn read_varint(buf: &mut &[u8]) -> Result<u64, io::Error> {
+fn read_uvarint(buf: &mut &[u8]) -> Result<u64, io::Error> {
     let mut result = 0;
     let mut shift = 0;
     while buf.remaining() > 0 {
@@ -23,6 +23,18 @@ fn read_nullable_string(buf: &mut &[u8]) -> Result<Option<String>, io::Error> {
     let str_bytes = &buf[..len];
     buf.advance(len);
     Ok(Some(String::from_utf8_lossy(str_bytes).to_string()))
+}
+
+fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
+    let mut n_fields = read_uvarint(buf)?;
+    let mut ret = vec![];
+
+    while n_fields > 0 {
+        n_fields -= 1;
+        // Here we should read the fields...
+    }
+
+    Ok(ret)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,12 +63,18 @@ impl TryFrom<i16> for ApiKey {
 }
 
 #[derive(Debug)]
+pub struct TagField {
+    number: u32,
+    tag: String,
+}
+
+#[derive(Debug)]
 pub struct Request {
     pub api_key: ApiKey,
     pub api_version: i16,
     pub correlation_id: i32,
     pub client_id: Option<String>,
-    pub client_version: Option<String>,
+    pub tag_field: Vec<TagField>,
     pub body: Vec<u8>,
 }
 
@@ -75,6 +93,7 @@ impl Request {
         } else {
             None
         };
+        let tag_field = read_tag_field(&mut buf)?;
         let body = buf.to_vec();
 
         Ok(Request {
@@ -82,7 +101,7 @@ impl Request {
             api_version,
             correlation_id,
             client_id,
-            client_version: None,
+            tag_field,
             body,
         })
     }
@@ -118,7 +137,7 @@ impl Response {
     }
 
     pub fn size(&self) -> u32 {
-        8 + self.body.len() as u32
+        4 + self.body.len() as u32
     }
 
     pub fn to_message(self) -> Vec<u8> {
@@ -191,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    async fn test_read_varint() {
+    async fn test_read_uvarint() {
         // Test cases: (input, expected_output)
         let test_cases = vec![
             (vec![0x00], 0),
@@ -207,7 +226,7 @@ mod tests {
 
         for (input, expected) in test_cases {
             let mut buf = &input[..];
-            let result = read_varint(&mut buf).unwrap();
+            let result = read_uvarint(&mut buf).unwrap();
             assert_eq!(result, expected, "Failed for input: {:?}", input);
             assert_eq!(buf.len(), 0, "Buffer not fully consumed for input: {:?}", input);
         }
@@ -215,9 +234,9 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "called `Result::unwrap()` on an `Err` value: Custom { kind: UnexpectedEof, error: \"Invalid varint\" }")]
-    async fn test_read_varint_incomplete() {
+    async fn test_read_uvarint_incomplete() {
         let mut buf = &[0x80, 0x80][..];
-        read_varint(&mut buf).unwrap();
+        read_uvarint(&mut buf).unwrap();
     }
 }
 

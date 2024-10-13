@@ -36,7 +36,9 @@ async fn handle_connection(mut socket: tokio::net::TcpStream) -> Result<()> {
 
     loop {
         let read_bytes = socket.read(&mut buffer).await?;
+        // eprintln!("Raw: {buffer:?}");
         let request = Request::try_from_message(buffer[..read_bytes].to_vec())?;
+        // eprintln!("Request: {request:?}");
         let response = build_response(request)?;
         socket.write_all(&response.to_message()).await?;
     }
