@@ -40,6 +40,7 @@ fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiKey {
     // More API keys will be included as support is implemented
+    Fetch = 1,
     ApiVersions = 18,
 }
 

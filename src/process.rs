@@ -38,8 +38,13 @@ impl From<&[u8]> for ApiVersion {
 const API_VERSIONS: &[ApiVersion] = &[
     ApiVersion {
         api_key: ApiKey::ApiVersions,
-        min_version: 0,
+        min_version: 4,
         max_version: 4,
+    },
+    ApiVersion {
+        api_key: ApiKey::Fetch,
+        min_version: 16,
+        max_version: 16,
     },
 ];
 
