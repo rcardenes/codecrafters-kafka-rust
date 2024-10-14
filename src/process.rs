@@ -1,17 +1,35 @@
 use anyhow::{bail, Result};
 use bytes::{Buf, BufMut};
-use crate::kafka_protocol::{read_compact_array, read_compact_string, read_uvarint, ApiKey, ErrorCode, Request, Response, Retrievable};
+use crate::kafka_protocol::{read_compact_array, read_compact_string, read_uvarint, ApiKey, Deserializable, ErrorCode, Request, Response, Serializable};
 
 fn write_uvarint(buf: &mut Vec<u8>, value: u64) {
     let mut value = value;
-    while value > 0 {
-        let mut encoded = (value & 0x7f) as u8;
-        value = value >> 7;
+    if value == 0 {
+        buf.put_u8(0);
+    } else {
+        while value > 0 {
+            let mut encoded = (value & 0x7f) as u8;
+            value = value >> 7;
 
-        if value > 0 {
-            encoded |= 0x80;
+            if value > 0 {
+                encoded |= 0x80;
+            }
+            buf.put_u8(encoded);
         }
-        buf.push(encoded);
+    }
+}
+
+fn write_uuid(buf: &mut Vec<u8>, uuid: uuid::Uuid) {
+    buf.put_slice(uuid.as_bytes());
+}
+
+fn write_compact_array<T>(buf: &mut Vec<u8>, collection: Vec<T>)
+where T: Serializable
+{
+    write_uvarint(buf, (collection.len() + 1) as u64);
+    for value in collection {
+        let as_vec = value.into();
+        buf.put_slice(&as_vec);
     }
 }
 
@@ -60,10 +78,10 @@ fn process_api_versions(req: Request) -> Result<Response> {
             body.put_i16(api_version.api_key as i16);
             body.put_i16(api_version.min_version);
             body.put_i16(api_version.max_version);
-            body.put_u8(0); // Empty tag buffer
+            write_uvarint(&mut body, 0); // Empty tag buffer
         }
         body.put_u32(0); // throttle_time
-        body.put_u8(0); // Empty tag buffer
+        write_uvarint(&mut body, 0); // Empty tag buffer
     }
 
     Ok(Response::new(crate::kafka_protocol::ResponseVer::V0, req.correlation_id, body))
@@ -79,7 +97,7 @@ struct Partition {
     partition_max_bytes: u32,
 }
 
-impl Partition {
+impl Deserializable for Partition {
     fn try_from(data: &mut &[u8]) -> Result<Self> {
         let partition = data.get_u32();
         let current_leader_epoch = data.get_u32();
@@ -100,27 +118,70 @@ impl Partition {
     }
 }
 
+#[derive(Debug)]
 struct Topic {
     topic_id: uuid::Uuid,
     partitions: Vec<Partition>,
 }
 
-impl Retrievable for Topic {
+impl Deserializable for Topic {
     fn try_from(value: &mut &[u8]) -> Result<Self> {
         let topic_id = uuid::Builder::from_bytes(value.copy_to_bytes(16)
             .as_ref()
             .try_into()?).into_uuid();
-        let n_partitions = read_uvarint(value)?;
-        let mut partitions = vec![];
-        for _ in 0..n_partitions {
-            partitions.push(Partition::try_from(value)?);
-        }
+        let partitions = match read_compact_array::<Partition>(value)? {
+            None => vec![],
+            Some(partitions) => partitions,
+        };
+        //let n_partitions = read_uvarint(value)?;
+        //let mut partitions = vec![];
+        //for _ in 0..n_partitions {
+        //    partitions.push(Partition::try_from(value)?);
+        //}
         assert_eq!(read_uvarint(value)?, 0); // We don't expect a tag buffer
 
         Ok(Topic {
             topic_id,
             partitions,
         })
+    }
+}
+
+struct ResponsePartition {
+}
+
+impl Serializable for ResponsePartition {
+    fn into(self: Self) -> Vec<u8> {
+        let mut buf = vec![];
+
+        buf.put_i32(0); // Partition index
+        buf.put_i16(ErrorCode::UnknownTopicId as i16);
+        buf.put_i64(0); // High watermark
+        buf.put_i64(0); // Last stable offset
+        buf.put_i64(0); // Log start offset
+        write_uvarint(&mut buf, 1); // Aborted transactions
+        buf.put_i32(0); // Preferred read replica
+        write_uvarint(&mut buf, 1); // Records
+        write_uvarint(&mut buf, 0); // Tag buffer
+
+        buf
+    }
+}
+
+struct FetchResponse {
+    topic_id: uuid::Uuid,
+    partitions: Vec<ResponsePartition>,
+}
+
+impl Serializable for FetchResponse {
+    fn into(self: Self) -> Vec<u8> {
+        let mut buf = vec![];
+
+        write_uuid(&mut buf, self.topic_id);
+        write_compact_array(&mut buf, self.partitions);
+        write_uvarint(&mut buf, 0); // Tag buffer
+
+        buf
     }
 }
 
@@ -133,7 +194,7 @@ fn process_fetch(req: Request) -> Result<Response> {
     let _isolation_level = req_body.get_u8();
     let session_id = req_body.get_i32();
     let _session_epoch = req_body.get_i32();
-    let _topics = read_compact_array::<Topic>(&mut req_body)?;
+    let maybe_topics = read_compact_array::<Topic>(&mut req_body)?;
     let _forgotten_topics = read_compact_array::<Topic>(&mut req_body)?;
     let _rack_id = read_compact_string(&mut req_body)?;
     assert_eq!(read_uvarint(&mut req_body)?, 0); // We don't expect a tag buffer
@@ -146,11 +207,23 @@ fn process_fetch(req: Request) -> Result<Response> {
         resp_body.put_i32(0); // throttle_time_ms
         resp_body.put_i16(ErrorCode::None as i16);
         resp_body.put_i32(session_id);
-        //let topic_bytes = topics.topic_id.into_bytes();
-        //resp_body.put_slice(&topic_bytes);
-        //resp_body.put_u8(0); // No topics
-        resp_body.put_u8(0); // No responses
-        resp_body.put_u8(0); // Empty tag buffer
+        if let Some(topics) = maybe_topics {
+            let responses = topics
+                .into_iter()
+                .map(|t| FetchResponse {
+                    topic_id: t.topic_id,
+                    partitions: vec![
+                        ResponsePartition {
+                        },
+                    ],
+                })
+                .collect();
+            write_compact_array(&mut resp_body, responses);
+        }
+        else {
+            write_uvarint(&mut resp_body, 0); // No responses
+        }
+        write_uvarint(&mut resp_body, 0); // Empty tag buffer
     }
 
     Ok(Response::new(crate::kafka_protocol::ResponseVer::V1, req.correlation_id, resp_body))

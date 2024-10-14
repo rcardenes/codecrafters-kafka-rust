@@ -34,12 +34,16 @@ pub fn read_compact_string(buf: &mut &[u8]) -> Result<String, io::Error> {
     Ok(String::from_utf8_lossy(&bt).to_string())
 }
 
-pub trait Retrievable {
+pub trait Serializable {
+    fn into(self: Self) -> Vec<u8>;
+}
+
+pub trait Deserializable {
     fn try_from(value: &mut &[u8]) -> anyhow::Result<Self> where Self: Sized;
 }
 
 pub fn read_compact_array<T>(buf: &mut &[u8]) -> anyhow::Result<Option<Vec<T>>>
-where T: Retrievable
+where T: Deserializable
 {
     let mut ret = vec![];
     let mut count = read_uvarint(buf)?;
@@ -81,6 +85,7 @@ pub enum ErrorCode {
     UnknownServerError = -1,
     None = 0,
     UnsupportedVersion = 35,
+    UnknownTopicId = 100,
 }
 
 impl TryFrom<i16> for ApiKey {
