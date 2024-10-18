@@ -148,6 +148,7 @@ impl Deserializable for Topic {
 }
 
 struct ResponsePartition {
+    error_code: ErrorCode,
 }
 
 impl Serializable for ResponsePartition {
@@ -155,7 +156,7 @@ impl Serializable for ResponsePartition {
         let mut buf = vec![];
 
         buf.put_i32(0); // Partition index
-        buf.put_i16(ErrorCode::UnknownTopicId as i16);
+        buf.put_i16(self.error_code as i16);
         buf.put_i64(0); // High watermark
         buf.put_i64(0); // Last stable offset
         buf.put_i64(0); // Log start offset
@@ -185,19 +186,49 @@ impl Serializable for FetchResponse {
     }
 }
 
-fn process_fetch(req: Request) -> Result<Response> {
-    let mut req_body = req.body.as_slice();
+#[derive(Debug)]
+struct FetchRequest {
+    max_wait_ms: i32,
+    min_bytes: i32,
+    max_bytes: i32,
+    isolation_level: u8,
+    session_id: i32,
+    session_epoch: i32,
+    topics: Option<Vec<Topic>>,
+    forgotten_topics: Option<Vec<Topic>>,
+    rack_id: String,
+}
 
-    let _max_wait_ms = req_body.get_i32();
-    let _min_bytes = req_body.get_i32();
-    let _max_bytes = req_body.get_i32();
-    let _isolation_level = req_body.get_u8();
-    let session_id = req_body.get_i32();
-    let _session_epoch = req_body.get_i32();
-    let maybe_topics = read_compact_array::<Topic>(&mut req_body)?;
-    let _forgotten_topics = read_compact_array::<Topic>(&mut req_body)?;
-    let _rack_id = read_compact_string(&mut req_body)?;
-    assert_eq!(read_uvarint(&mut req_body)?, 0); // We don't expect a tag buffer
+impl Deserializable for FetchRequest {
+    fn try_from(value: &mut &[u8]) -> anyhow::Result<Self> where Self: Sized {
+        let max_wait_ms = value.get_i32();
+        let min_bytes = value.get_i32();
+        let max_bytes = value.get_i32();
+        let isolation_level = value.get_u8();
+        let session_id = value.get_i32();
+        let session_epoch = value.get_i32();
+        let topics = read_compact_array::<Topic>(value)?;
+        let forgotten_topics = read_compact_array::<Topic>(value)?;
+        let rack_id = read_compact_string(value)?;
+        assert_eq!(read_uvarint(value)?, 0); // We don't expect a tag buffer
+        
+        Ok(FetchRequest {
+            max_wait_ms,
+            min_bytes,
+            max_bytes,
+            isolation_level,
+            session_id,
+            session_epoch,
+            topics,
+            forgotten_topics,
+            rack_id,
+        })
+    }
+}
+
+fn process_fetch(req: Request) -> Result<Response> {
+    let fetch_req = <FetchRequest as Deserializable>::try_from(&mut req.body.as_slice())?;
+    eprintln!("Fetch Request: {fetch_req:#?}");
 
     let mut resp_body: Vec<u8> = vec![];
 
@@ -206,16 +237,25 @@ fn process_fetch(req: Request) -> Result<Response> {
     } else {
         resp_body.put_i32(0); // throttle_time_ms
         resp_body.put_i16(ErrorCode::None as i16);
-        resp_body.put_i32(session_id);
-        if let Some(topics) = maybe_topics {
+        resp_body.put_i32(fetch_req.session_id);
+        if let Some(topics) = fetch_req.topics {
             let responses = topics
                 .into_iter()
-                .map(|t| FetchResponse {
-                    topic_id: t.topic_id,
-                    partitions: vec![
-                        ResponsePartition {
-                        },
-                    ],
+                .map(|t| {
+                    // There are no instructions, so this is the only way I've found
+                    // so far to consistently distinguish between the two cases
+                    let error_code = match t.topic_id.as_fields() {
+                        (_, 0, 0, _) => ErrorCode::UnknownTopicId,
+                        _ => ErrorCode::None,
+                    };
+                    FetchResponse {
+                        topic_id: t.topic_id,
+                        partitions: vec![
+                            ResponsePartition {
+                                error_code,
+                            },
+                        ],
+                    }
                 })
                 .collect();
             write_compact_array(&mut resp_body, responses);
