@@ -72,13 +72,6 @@ fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
     Ok(ret)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApiKey {
-    // More API keys will be included as support is implemented
-    Fetch = 1,
-    ApiVersions = 18,
-}
-
 #[repr(i16)]
 pub enum ErrorCode {
     // More error codes will be included as needed
@@ -88,6 +81,14 @@ pub enum ErrorCode {
     UnknownTopicId = 100,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKey {
+    // More API keys will be included as support is implemented
+    Fetch = 1,
+    ApiVersions = 18,
+    DescribeTopicPartitions = 75,
+}
+
 impl TryFrom<i16> for ApiKey {
     type Error = io::Error;
 
@@ -95,6 +96,7 @@ impl TryFrom<i16> for ApiKey {
         match value {
             1 => Ok(ApiKey::Fetch),
             18 => Ok(ApiKey::ApiVersions),
+            75 => Ok(ApiKey::DescribeTopicPartitions),
             _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported API key")),
         }
     }

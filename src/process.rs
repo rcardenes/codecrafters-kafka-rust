@@ -64,6 +64,11 @@ const API_VERSIONS: &[ApiVersion] = &[
         min_version: 16,
         max_version: 16,
     },
+    ApiVersion {
+        api_key: ApiKey::DescribeTopicPartitions,
+        min_version: 0,
+        max_version: 0,
+    },
 ];
 
 fn process_api_versions(req: Request) -> Result<Response> {
@@ -269,11 +274,16 @@ fn process_fetch(req: Request) -> Result<Response> {
     Ok(Response::new(crate::kafka_protocol::ResponseVer::V1, req.correlation_id, resp_body))
 }
 
+fn process_describe_topic_partitions(req: Request) -> Result<Response> {
+    todo!()
+}
+
 pub fn build_response(req: Request) -> Result<Response> {
     #[allow(unreachable_patterns)]
     match &req.api_key {
         ApiKey::ApiVersions => Ok(process_api_versions(req)?),
         ApiKey::Fetch => Ok(process_fetch(req)?),
+        ApiKey::DescribeTopicPartitions => Ok(process_describe_topic_partitions(req)?),
         other => bail!("API Key {other:?} not yet implemented")
     }
 }
