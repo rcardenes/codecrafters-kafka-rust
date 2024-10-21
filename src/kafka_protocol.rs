@@ -60,7 +60,7 @@ where T: Deserializable
     }
 }
 
-fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
+pub fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
     let mut n_fields = read_uvarint(buf)?;
     let mut ret = vec![];
 
@@ -72,11 +72,13 @@ fn read_tag_field(buf: &mut &[u8]) -> Result<Vec<TagField>, io::Error> {
     Ok(ret)
 }
 
+#[derive(Debug)]
 #[repr(i16)]
 pub enum ErrorCode {
     // More error codes will be included as needed
     UnknownServerError = -1,
     None = 0,
+    UnknownTopicOrPartition = 3,
     UnsupportedVersion = 35,
     UnknownTopicId = 100,
 }
@@ -128,11 +130,7 @@ impl Request {
         let api_key = ApiKey::try_from(buf.get_i16())?;
         let api_version = buf.get_i16();
         let correlation_id = buf.get_i32();
-        let client_id = if api_version > 0 {
-            read_nullable_string(&mut buf)?
-        } else {
-            None
-        };
+        let client_id = read_nullable_string(&mut buf)?;
         let tag_field = read_tag_field(&mut buf)?;
         let body = buf.to_vec();
 
@@ -194,7 +192,7 @@ impl Response {
 
         buf.put_u32(self.size());
         buf.put_i32(self.correlation_id);
-        if (self.response_ver == ResponseVer::V1) {
+        if self.response_ver == ResponseVer::V1 {
             buf.put_u8(0); // Empty tag buffer
         }
         buf.extend(self.body);
